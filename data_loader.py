@@ -179,20 +179,36 @@ METRICAS_TELEMETRIA = [
 
 def cargar_especialistas(origen, es_excel_origen: bool = False) -> pd.DataFrame:
     """
-    Carga la telemetría por especialista.
+    Carga la telemetría por especialista de forma ROBUSTA.
 
-    - Si recibe el CSV de muestra (data/incidencias_especialistas_mayo.csv),
-      lo lee directo.
-    - Si recibe el Excel completo de Felipe, lee la hoja '📋 Mayo - Todos'
-      cuyo encabezado está en la fila índice 1.
+    - Si es Excel, busca la hoja '📋 Mayo - Todos' (o cualquiera que contenga
+      'todos'); si no la encuentra, intenta la primera hoja.
+    - Si el archivo no corresponde (p. ej. se subió el export de HubSpot por
+      error), lanza un ValueError CLARO en español que la app muestra como
+      aviso, en lugar de romperse.
     """
     nombre = getattr(origen, "name", str(origen)).lower()
     if nombre.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(origen, sheet_name="📋 Mayo - Todos", header=1)
+        try:
+            xls = pd.ExcelFile(origen)
+        except Exception as e:
+            raise ValueError("No pude abrir el archivo Excel del reporte de "
+                             "especialistas.") from e
+        hoja = next((s for s in xls.sheet_names if "todos" in str(s).lower()), None)
+        df = pd.read_excel(xls, sheet_name=hoja if hoja else 0, header=1)
     else:
         df = _leer_tabla(origen)
 
     df = df.dropna(how="all")
+
+    if "Especialista" not in df.columns:
+        raise ValueError(
+            "El archivo subido no parece el 'Reporte de especialistas' "
+            "(no encontré la hoja '📋 Mayo - Todos' ni la columna 'Especialista'). "
+            "¿Subiste por error el export de HubSpot en este cargador? "
+            "Aquí va el reporte de especialistas, no el de tickets."
+        )
+
     df = df[df["Especialista"].notna()].copy()
 
     for c in METRICAS_TELEMETRIA:
@@ -441,16 +457,22 @@ def incidencias_por_tipo(esp_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def cargar_pruebas(origen) -> pd.DataFrame:
-    """Carga el seguimiento de pruebas técnicas (CSV de muestra o Excel completo)."""
+    """Carga el seguimiento de pruebas técnicas de forma robusta."""
     nombre = getattr(origen, "name", str(origen)).lower()
     if nombre.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(origen, sheet_name="🔧 Seguimiento Pruebas", header=3)
+        xls = pd.ExcelFile(origen)
+        hoja = next((s for s in xls.sheet_names if "prueba" in str(s).lower()), None)
+        if hoja is None:
+            raise ValueError("El Excel no tiene la hoja de 'Seguimiento de Pruebas'.")
+        df = pd.read_excel(xls, sheet_name=hoja, header=3)
         df.columns = [str(c).strip() for c in df.columns]
         df = df.rename(columns={"Resultado": "Resultado inicial",
                                 "Resultado.1": "Resultado seguimiento"})
     else:
         df = _leer_tabla(origen)
     df = df.dropna(how="all")
+    if "Especialista" not in df.columns:
+        raise ValueError("El archivo no corresponde al seguimiento de pruebas.")
     df = df[df["Especialista"].notna()].copy()
     return df.reset_index(drop=True)
 

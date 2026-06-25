@@ -21,10 +21,23 @@ OK_GREEN, WARN_RED, WARN_AMBER = "#27AE60", "#E74C3C", "#F39C12"
 PALETA = [OY_TEAL, OY_BLUE, "#7C4DFF", OK_GREEN, WARN_AMBER, WARN_RED,
           "#00BFA5", "#5C6BC0", "#FF8A65", "#26A69A", "#AB47BC", "#78909C"]
 
-DATA_DIR = Path(__file__).parent / "data"
-SAMPLE_TICKETS = DATA_DIR / "problemas_tecnicos_mayo.csv"
-SAMPLE_ESP = DATA_DIR / "incidencias_especialistas_mayo.csv"
-SAMPLE_PRUEBAS = DATA_DIR / "seguimiento_pruebas_mayo.csv"
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / "data"
+
+
+def _buscar_dato(nombre):
+    """Busca un CSV de muestra en data/ y, si no, en la raíz del repo.
+    Devuelve la ruta (str) o None. Tolera que al subir a GitHub el archivo
+    haya quedado fuera de la carpeta data/."""
+    for cand in (DATA_DIR / nombre, BASE_DIR / nombre):
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+SAMPLE_TICKETS = _buscar_dato("problemas_tecnicos_mayo.csv")
+SAMPLE_ESP = _buscar_dato("incidencias_especialistas_mayo.csv")
+SAMPLE_PRUEBAS = _buscar_dato("seguimiento_pruebas_mayo.csv")
 
 st.set_page_config(page_title="Incidencias Técnicas · Opción Yo",
                    page_icon="🛠️", layout="wide", initial_sidebar_state="expanded")
@@ -134,8 +147,8 @@ with st.sidebar:
     if subido is not None:
         df = dl.cargar_tickets(subido)
         st.success(f"✅ {subido.name} ({len(df)} tickets)")
-    elif SAMPLE_TICKETS.exists():
-        df = _tk(str(SAMPLE_TICKETS))
+    elif SAMPLE_TICKETS is not None:
+        df = _tk(SAMPLE_TICKETS)
         st.info(f"📄 Muestra incluida ({len(df)} tickets).")
     else:
         st.error("Sube el export de HubSpot para continuar."); st.stop()
@@ -468,14 +481,22 @@ with tabs[7]:
     st.markdown('<div class="intro">📡 Telemetría de plataforma por especialista '
                 '(sesiones). Vista <b>paralela</b>: no se cruza por nombre con los tickets '
                 'de HubSpot.</div>', unsafe_allow_html=True)
-    up_e = st.file_uploader("Reporte de especialistas (.xlsx o .csv)",
+    up_e = st.file_uploader("Reporte de especialistas (.xlsx o .csv) — NO el de HubSpot",
                             type=["xlsx","xls","csv"], key="up_esp")
+    esp_df = None
     if up_e is not None:
-        esp_df = dl.cargar_especialistas(up_e)
-    elif SAMPLE_ESP.exists():
-        esp_df = _esp(str(SAMPLE_ESP))
-    else:
-        st.warning("Sube el reporte de especialistas."); st.stop()
+        try:
+            esp_df = dl.cargar_especialistas(up_e)
+            st.success(f"✅ Reporte cargado: {up_e.name}")
+        except Exception as e:
+            st.error(f"⚠️ {e}")
+            if SAMPLE_ESP is not None:
+                st.info("Sigo mostrando la **muestra incluida** mientras tanto.")
+                esp_df = _esp(SAMPLE_ESP)
+    elif SAMPLE_ESP is not None:
+        esp_df = _esp(SAMPLE_ESP)
+    if esp_df is None:
+        st.warning("Sube el reporte de especialistas (hoja '📋 Mayo - Todos')."); st.stop()
 
     tot_c = int(esp_df["Total Citas"].sum()); tot_i = int(esp_df["Citas c/ Inc."].sum())
     n_e = int((esp_df["Tipo"]=="Especialista").sum()) if "Tipo" in esp_df else len(esp_df)
@@ -503,8 +524,8 @@ with tabs[7]:
 
     # --- NUEVO: Efectividad de pruebas técnicas ---
     pr = None
-    if SAMPLE_PRUEBAS.exists():
-        pr = _pr(str(SAMPLE_PRUEBAS))
+    if SAMPLE_PRUEBAS is not None:
+        pr = _pr(SAMPLE_PRUEBAS)
     elif up_e is not None and getattr(up_e, "name", "").lower().endswith((".xlsx", ".xls")):
         try: pr = dl.cargar_pruebas(up_e)
         except Exception: pr = None
