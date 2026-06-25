@@ -28,23 +28,26 @@ y el reporte de Felipe. Reproducen exactamente:
 
 ---
 
-## 🧭 Pestañas
+## 🧭 Pestañas (9)
 
-1. **📊 Resumen Ejecutivo** — KPIs de cabecera, resolución, top categorías, segmentos.
-2. **🎯 Sin Respuesta** — el foco de Felipe: ranking de reincidencia por contacto
-   (Especialista / Interno / Cliente), con descargas.
-3. **🔁 Reincidencia / Contactos** — recurrentes + detalle ticket a ticket por contacto.
+1. **📊 Resumen** — KPIs de cabecera (tiempos **en días**), resolución, categorías,
+   + resolución efectiva, % sin prioridad, concentración Pareto.
+2. **🎯 Sin Respuesta** — el foco de Felipe: **tasa de fuga por categoría**, ranking
+   de reincidencia por contacto (Especialista / Interno / Cliente), con descargas.
+3. **🔁 Reincidencia** — recurrentes + detalle ticket a ticket por contacto.
 4. **📁 Distribuciones** — Categoría, Resolución, Prioridad, Estado, Rangos de cierre.
-5. **⏱️ SLA & Tiempos** — cumplimiento ANS 1ª respuesta y cierre + histograma de horas.
-6. **🎓 Atención a Especialistas** — cumplimiento ANS + tiempo a resolución para
-   tickets de especialistas, comparado con clientes.
-7. **🔎 Explorador de Tickets** — tabla filtrable + descarga CSV/Excel.
-8. **📡 Telemetría Especialistas** — top por % incidencia y por métrica técnica
-   (Conn. loss, Reloads, Errores JS…), filtrable por Talent Manager.
+5. **⏱️ SLA & Tiempos** — cumplimiento ANS 1ª respuesta y cierre + histograma en días.
+6. **🎓 Atención a Especialistas** — cumplimiento ANS + tiempo a resolución (días),
+   comparado con clientes.
+7. **🔎 Explorador** — tabla filtrable + descarga CSV/Excel.
+8. **📡 Telemetría** — **incidencias por tipo** (resumen), **efectividad de pruebas
+   técnicas** (antes/después) y ranking de especialistas por % incidencia y métrica.
+9. **💡 Insights & Recomendaciones** — lectura automática de los datos + acción
+   sugerida para cada hallazgo, lista para gerencia.
 
 **Filtros globales (barra lateral):** definición de "Sin respuesta"
 (Resolución y/o Categoría), toggle *Todos vs Solo Sin Respuesta*, segmento,
-prioridad y estado.
+prioridad y estado. Todos los tiempos se muestran **en días** (1 día = 24 h).
 
 ---
 
@@ -79,7 +82,8 @@ opcionyo-incidencias/
 │   └── config.toml                # Tema de marca
 └── data/
     ├── problemas_tecnicos_mayo.csv         # Muestra HubSpot (para arrancar)
-    └── incidencias_especialistas_mayo.csv  # Muestra telemetría
+    ├── incidencias_especialistas_mayo.csv  # Muestra telemetría
+    └── seguimiento_pruebas_mayo.csv        # Muestra pruebas técnicas
 ```
 
 El dashboard **arranca con las muestras incluidas**. Para actualizar, sube tu

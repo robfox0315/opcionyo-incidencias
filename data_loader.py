@@ -272,6 +272,206 @@ def ranking_reincidencia(df: pd.DataFrame, solo_sin_respuesta: bool = True) -> p
     return g
 
 
+def horas_a_dias(h: float) -> float:
+    """Convierte horas a días (1 día = 24 h)."""
+    return np.nan if pd.isna(h) else h / 24.0
+
+
+def tasa_sin_respuesta_por_categoria(df: pd.DataFrame, min_tickets: int = 5) -> pd.DataFrame:
+    """% de 'sin respuesta' dentro de cada categoría (separa multivalor ';')."""
+    cat = df.assign(cat=df["categoria"].astype(str).str.split(";")).explode("cat")
+    cat["cat"] = cat["cat"].str.strip()
+    g = (cat.groupby("cat")
+         .agg(Tickets=("ticket_id", "size"), Sin_resp=("sin_respuesta", "sum"))
+         .reset_index())
+    g = g[g["Tickets"] >= min_tickets].copy()
+    g["% sin respuesta"] = (g["Sin_resp"] / g["Tickets"] * 100).round(0)
+    g = g.sort_values("% sin respuesta", ascending=False).reset_index(drop=True)
+    return g.rename(columns={"cat": "Categoría", "Sin_resp": "Sin respuesta"})
+
+
+def generar_insights(df: pd.DataFrame) -> list[dict]:
+    """
+    Genera insights + recomendaciones de forma dinámica desde los datos.
+    Cada insight: {nivel, icono, titulo, detalle, recomendacion}.
+    nivel ∈ {'critico','alerta','ok','info'}.
+    """
+    out = []
+    total = len(df)
+    if total == 0:
+        return [{"nivel": "info", "icono": "ℹ️", "titulo": "Sin datos en la vista",
+                 "detalle": "Los filtros actuales no devuelven tickets.",
+                 "recomendacion": "Amplía los filtros en la barra lateral."}]
+
+    k = kpis_generales(df)
+    sr_pct = k["pct_sin_respuesta"]
+
+    # 1. Sin respuesta global
+    nivel = "critico" if sr_pct > 40 else "alerta" if sr_pct > 25 else "ok"
+    out.append({
+        "nivel": nivel, "icono": "🚫",
+        "titulo": f"{sr_pct:.0f}% de los tickets cierran SIN respuesta registrada",
+        "detalle": f"{k['sin_respuesta']} de {total} tickets quedan como 'sin respuesta' "
+                   f"(por Resolución o Categoría).",
+        "recomendacion": "Definir un protocolo de cierre: ningún ticket debería "
+                         "cerrarse sin al menos una nota de respuesta. Auditar primero "
+                         "las categorías con mayor tasa (ver abajo).",
+    })
+
+    # 2. Peor categoría por tasa de sin respuesta
+    t = tasa_sin_respuesta_por_categoria(df, min_tickets=5)
+    t = t[~t["Categoría"].str.contains("Sin respuesta", case=False, na=False)]
+    if len(t):
+        peor = t.iloc[0]
+        out.append({
+            "nivel": "critico" if peor["% sin respuesta"] > 70 else "alerta",
+            "icono": "📉",
+            "titulo": f"'{peor['Categoría']}': {peor['% sin respuesta']:.0f}% sin respuesta",
+            "detalle": f"{int(peor['Sin respuesta'])} de {int(peor['Tickets'])} tickets de "
+                       f"esa categoría cierran sin respuesta.",
+            "recomendacion": "Revisar el flujo de esta categoría: ¿falta asignación, "
+                             "plantilla de respuesta o seguimiento? Es la de mayor fuga.",
+        })
+
+    # 3. Mayor reincidente
+    rank = ranking_reincidencia(df[df["sin_respuesta"]], solo_sin_respuesta=False)
+    if len(rank):
+        r0 = rank.iloc[0]
+        out.append({
+            "nivel": "alerta" if r0["Tickets"] >= 3 else "info", "icono": "🔁",
+            "titulo": f"Mayor reincidencia en 'sin respuesta': {r0['Contacto']}",
+            "detalle": f"{int(r0['Tickets'])} tickets sin respuesta · tipo: {r0['Tipo']}.",
+            "recomendacion": "Contacto proactivo 1-a-1 con este caso para cortar la "
+                             "reincidencia antes de que escale a churn/insatisfacción.",
+        })
+
+    # 4. Concentración de especialistas en sin respuesta
+    sr = df[df["sin_respuesta"]]
+    if len(sr):
+        esp_pct = (sr["segmento"] == "Especialista").mean() * 100
+        out.append({
+            "nivel": "info", "icono": "🎓",
+            "titulo": f"Los especialistas son {esp_pct:.0f}% de los tickets sin respuesta",
+            "detalle": f"{int((sr['segmento']=='Especialista').sum())} de {len(sr)} "
+                       f"sin respuesta provienen de especialistas internos.",
+            "recomendacion": "Si la incidencia interna es alta, priorizar un canal "
+                             "dedicado de soporte a especialistas (afecta sus sesiones).",
+        })
+
+    # 5. Priorización sin usar (calidad de dato)
+    sin_prio = df["prioridad"].isna().mean() * 100
+    media_pct = (df["prioridad"].astype(str).str.lower() == "media").mean() * 100
+    if sin_prio > 10 or media_pct > 70:
+        out.append({
+            "nivel": "alerta", "icono": "🏷️",
+            "titulo": "La priorización casi no se usa",
+            "detalle": f"{media_pct:.0f}% marcados 'Media' y {sin_prio:.0f}% sin prioridad. "
+                       "No hay señal de triage real.",
+            "recomendacion": "Definir criterios de Urgente/Alta (p. ej. especialista en "
+                             "sesión activa) para priorizar lo crítico y medir SLA por nivel.",
+        })
+
+    # 6. Resolución efectiva
+    res_ok = (df["resolucion"].astype(str).str.lower() == "resuelto exitoso").mean() * 100
+    out.append({
+        "nivel": "alerta" if res_ok < 40 else "ok", "icono": "✅",
+        "titulo": f"Tasa de resolución efectiva: {res_ok:.0f}%",
+        "detalle": f"Solo {res_ok:.0f}% de los tickets se marcan 'Resuelto exitoso'.",
+        "recomendacion": "Subir la resolución efectiva reduciendo el 'sin respuesta'. "
+                         "Meta sugerida: >50% en el próximo corte.",
+    })
+
+    # 7. Tiempo a cierre en días
+    p90_d = horas_a_dias(k["horas_p90"])
+    if not pd.isna(p90_d):
+        out.append({
+            "nivel": "alerta" if p90_d > 5 else "ok", "icono": "⏱️",
+            "titulo": f"P90 de cierre: {p90_d:.1f} días",
+            "detalle": f"El 90% de los tickets cierra en ≤ {p90_d:.1f} días "
+                       f"(mediana {horas_a_dias(k['horas_mediana']):.1f} d).",
+            "recomendacion": "Fijar un SLA objetivo en días (p. ej. cierre ≤ 3 días) y "
+                             "monitorear el P90, no solo el promedio.",
+        })
+
+    # 8. Backlog abierto
+    if k["abiertos"] > 0:
+        out.append({
+            "nivel": "alerta" if k["abiertos"] >= 5 else "info", "icono": "📂",
+            "titulo": f"{k['abiertos']} tickets abiertos sin fecha de cierre",
+            "detalle": "Quedan sin cierre registrado en HubSpot.",
+            "recomendacion": "Revisar y cerrar/dar seguimiento al backlog para no "
+                             "distorsionar los tiempos del próximo corte.",
+        })
+
+    # 9. Concentración (Pareto)
+    vc = df["contacto"].value_counts()
+    top10 = vc.head(10).sum()
+    out.append({
+        "nivel": "info", "icono": "📊",
+        "titulo": f"Top 10 contactos concentran {top10/total*100:.0f}% de los tickets",
+        "detalle": f"{int(top10)} de {total} tickets provienen de 10 contactos.",
+        "recomendacion": "Atacar la cola larga con acciones individuales a ese top "
+                         "tiene alto retorno (regla de Pareto).",
+    })
+
+    return out
+
+
+def incidencias_por_tipo(esp_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Totales por tipo de incidencia técnica (suma de las 6 métricas de
+    telemetría) + % del total + nº de especialistas afectados + nivel.
+    Devuelve un resumen ordenado, listo para gerencia.
+    """
+    filas = []
+    total = 0
+    for m in METRICAS_TELEMETRIA:
+        if m in esp_df.columns:
+            ev = int(esp_df[m].sum())
+            afect = int((esp_df[m] > 0).sum())
+            filas.append({"Tipo": m, "Eventos": ev, "Especialistas afectados": afect})
+            total += ev
+    out = pd.DataFrame(filas).sort_values("Eventos", ascending=False).reset_index(drop=True)
+    out["% del total"] = (out["Eventos"] / total * 100).round(1) if total else 0
+
+    def _nivel(p):
+        return "🔴 Crítico" if p >= 30 else "🟠 Alto" if p >= 10 else "🟡 Medio" if p >= 1 else "🟢 Bajo"
+    out["Nivel"] = out["% del total"].apply(_nivel)
+    return out
+
+
+def cargar_pruebas(origen) -> pd.DataFrame:
+    """Carga el seguimiento de pruebas técnicas (CSV de muestra o Excel completo)."""
+    nombre = getattr(origen, "name", str(origen)).lower()
+    if nombre.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(origen, sheet_name="🔧 Seguimiento Pruebas", header=3)
+        df.columns = [str(c).strip() for c in df.columns]
+        df = df.rename(columns={"Resultado": "Resultado inicial",
+                                "Resultado.1": "Resultado seguimiento"})
+    else:
+        df = _leer_tabla(origen)
+    df = df.dropna(how="all")
+    df = df[df["Especialista"].notna()].copy()
+    return df.reset_index(drop=True)
+
+
+def resumen_pruebas(pr: pd.DataFrame) -> dict:
+    """Métricas de efectividad del seguimiento de pruebas técnicas."""
+    realizadas = int((pr.get("Estado Prueba", pd.Series(dtype=str))
+                      .astype(str).str.contains("Realizada", na=False)).sum())
+    ini = pr.get("Resultado inicial", pd.Series(dtype=str)).astype(str).str.strip().str.lower()
+    seg = pr.get("Resultado seguimiento", pd.Series(dtype=str)).astype(str).str.strip().str.lower()
+    malos = int((ini == "malo").sum())
+    mejoraron = int(((ini == "malo") & (seg.str.startswith("bueno"))).sum())
+    return {
+        "total_registros": len(pr),
+        "realizadas": realizadas,
+        "result_malo": malos,
+        "mejoraron": mejoraron,
+        "pct_mejora": (mejoraron / malos * 100) if malos else 0,
+    }
+
+
 def df_a_excel_bytes(df: pd.DataFrame, hoja: str = "Datos") -> bytes:
     """Serializa un DataFrame a bytes de Excel (para descarga)."""
     buffer = io.BytesIO()
