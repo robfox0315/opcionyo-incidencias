@@ -1,0 +1,29 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Streamlit ---
+# Nunca subas tus secretos/credenciales al repo:
+.streamlit/secrets.toml
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Temporales / exports descargados ---
+*.tmp
+~$*
+tickets_filtrados.*
+reincidencia_sin_respuesta.*
+telemetria_especialistas.*
+tickets_especialistas.*
+
+# NOTA: la carpeta data/ SÍ se sube (trae las muestras para que el
+# dashboard arranque de inmediato). Si no quieres versionar datos con
+# correos de clientes, borra data/ y usa solo el cargador de archivos,
+# y mantén el repositorio PRIVADO.
