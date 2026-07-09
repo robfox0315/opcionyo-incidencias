@@ -164,9 +164,13 @@ def enriquecer_tickets(df: pd.DataFrame) -> pd.DataFrame:
         df["horas_primera_respuesta"] = np.nan
 
     if "fecha_cierre" in df.columns:
-        df["fecha_cierre"] = pd.to_datetime(df["fecha_cierre"], errors="coerce")
+        # utc=True unifica tz-aware (HubSpot '…Z') y naive (CSV); tz_localize(None)
+        # las deja SIN zona horaria (Excel/openpyxl no soporta fechas con tz).
+        df["fecha_cierre"] = pd.to_datetime(
+            df["fecha_cierre"], errors="coerce", utc=True).dt.tz_localize(None)
     if "fecha_creacion" in df.columns:
-        df["fecha_creacion"] = pd.to_datetime(df["fecha_creacion"], errors="coerce")
+        df["fecha_creacion"] = pd.to_datetime(
+            df["fecha_creacion"], errors="coerce", utc=True).dt.tz_localize(None)
 
     # --- bandera SIN RESPUESTA (doble criterio) ---
     resol = df["resolucion"].astype(str).str.strip().str.lower()
@@ -535,8 +539,24 @@ def resumen_pruebas(pr: pd.DataFrame) -> dict:
 
 
 def df_a_excel_bytes(df: pd.DataFrame, hoja: str = "Datos") -> bytes:
-    """Serializa un DataFrame a bytes de Excel (para descarga)."""
+    """Serializa un DataFrame a bytes de Excel, saneando lo que openpyxl rechaza:
+    fechas con zona horaria, valores infinitos y strings demasiado largos."""
+    safe = df.copy()
+    for c in safe.columns:
+        s = safe[c]
+        # 1) fechas con zona horaria -> sin zona
+        if isinstance(s.dtype, pd.DatetimeTZDtype):
+            safe[c] = s.dt.tz_localize(None)
+        # 2) textos (object o dtype 'str'/'string' de pandas nuevo): recortar a
+        #    32.000 (límite de celda 32.767) y quitar caracteres de control
+        elif s.dtype == object or pd.api.types.is_string_dtype(s):
+            safe[c] = s.apply(
+                lambda v: re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", str(v)[:32000])
+                if isinstance(v, str) else v)
+    # 3) infinitos -> vacío
+    safe = safe.replace([np.inf, -np.inf], np.nan)
+
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=hoja[:31])
+        safe.to_excel(writer, index=False, sheet_name=str(hoja)[:31])
     return buffer.getvalue()
