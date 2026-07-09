@@ -40,6 +40,10 @@ COLUMNAS_CANONICAS = {
     "ans_primera":    ["estado de ans de tiempo hasta primera respuesta"],
     "rango_cierre":   ["rangos de tiempo a cierre de ticket"],
     "contacto_ids":   ["associated contact ids"],
+    "fecha_creacion": ["fecha de creacion", "fecha de creación"],
+    "propietario":    ["propietario del ticket", "ticket owner"],
+    "pipeline":       ["pipeline"],
+    "fuente":         ["fuente", "source"],
 }
 
 
@@ -95,14 +99,38 @@ def _horas_desde_hms(x) -> float:
 # ----------------------------------------------------------------------
 def cargar_tickets(origen) -> pd.DataFrame:
     """
-    Carga el export de HubSpot (xlsx o csv) y devuelve un DataFrame
-    enriquecido con columnas derivadas.
-
-    `origen` puede ser una ruta (str/Path) o un objeto file-like
-    (lo que devuelve st.file_uploader).
+    Carga el export de HubSpot (xlsx o csv) desde archivo y lo enriquece.
+    `origen` puede ser ruta o file-like (st.file_uploader).
     """
     df = _leer_tabla(origen)
+    return enriquecer_tickets(df)
+
+
+def enriquecer_tickets(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Toma un DataFrame de tickets (venga de archivo o de la API de HubSpot),
+    normaliza nombres de columna y agrega TODAS las columnas derivadas.
+    Es el punto único de verdad: archivo y API pasan por aquí, garantizando
+    que los KPIs se calculen igual sin importar la fuente.
+    """
     df = _mapear_columnas(df)
+
+    # --- VALIDACIÓN: ¿trae las columnas base? ---
+    if "contacto" not in df.columns and "resolucion" not in df.columns:
+        cols_orig = ", ".join(str(c) for c in df.columns[:8])
+        raise ValueError(
+            "Los datos NO tienen las columnas de 'problemas técnicos' "
+            "(faltan 'Associated Contact', 'Resolución', 'Descripción'…). "
+            "Si es un archivo, exporta la vista de 'problemas técnicos'. "
+            f"Columnas detectadas: {cols_orig}…"
+        )
+
+    # --- SEGURIDAD: crear columnas ausentes como vacías ---
+    for col in ["contacto", "descripcion", "prioridad", "estado", "fecha_cierre",
+                "ans_cierre", "tiempo_cierre", "respondido", "resolucion",
+                "categoria", "ans_primera", "rango_cierre", "contacto_ids"]:
+        if col not in df.columns:
+            df[col] = np.nan
 
     # --- columnas derivadas de contacto ---
     df["email"] = df["contacto"].apply(_extraer_email)
@@ -122,9 +150,23 @@ def cargar_tickets(origen) -> pd.DataFrame:
     df["segmento"] = df.apply(_segmento, axis=1)
 
     # --- tiempos ---
-    df["horas_cierre"] = df["tiempo_cierre"].apply(_horas_desde_hms)
+    # Preferimos el tiempo numérico real (viene de la API en ms). Si no está,
+    # parseamos el string HH:mm:ss del export.
+    if "ms_cierre" in df.columns and pd.to_numeric(df["ms_cierre"], errors="coerce").notna().any():
+        df["horas_cierre"] = pd.to_numeric(df["ms_cierre"], errors="coerce") / 3_600_000
+    else:
+        df["horas_cierre"] = df["tiempo_cierre"].apply(_horas_desde_hms)
+
+    # Tiempo REAL de primera respuesta (solo disponible vía API: ms_primera_resp)
+    if "ms_primera_resp" in df.columns:
+        df["horas_primera_respuesta"] = pd.to_numeric(df["ms_primera_resp"], errors="coerce") / 3_600_000
+    else:
+        df["horas_primera_respuesta"] = np.nan
+
     if "fecha_cierre" in df.columns:
         df["fecha_cierre"] = pd.to_datetime(df["fecha_cierre"], errors="coerce")
+    if "fecha_creacion" in df.columns:
+        df["fecha_creacion"] = pd.to_datetime(df["fecha_creacion"], errors="coerce")
 
     # --- bandera SIN RESPUESTA (doble criterio) ---
     resol = df["resolucion"].astype(str).str.strip().str.lower()
@@ -134,8 +176,6 @@ def cargar_tickets(origen) -> pd.DataFrame:
     df["sin_respuesta"] = df["sr_resolucion"] | df["sr_categoria"]
 
     # --- escalado a IT ---
-    # Titular = estado "Escalar a IT" (3). "Cerrado por IT" (1) se ve aparte
-    # en la distribución de Estado para no mezclar definiciones.
     est = df["estado"].astype(str).str.lower()
     df["escalado_it"] = est.str.contains("escalar a it")
     df["it_involucrado"] = est.str.contains("escalar a it") | est.str.contains("cerrado por it")

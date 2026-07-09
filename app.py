@@ -14,6 +14,7 @@ import plotly.express as px
 import streamlit as st
 
 import data_loader as dl
+import hubspot_api as hs
 
 # ---------------------------------------------------------------------
 OY_TEAL, OY_BLUE, OY_DARK, OY_GREY = "#16B6C2", "#2F80ED", "#0E2A47", "#6B7280"
@@ -126,6 +127,13 @@ def donut(d, names, values, colores=None):
 
 
 # ---------------------------------------------------------------------
+@st.cache_data(show_spinner="Trayendo tickets de HubSpot…", ttl=900)
+def _tickets_hubspot(token: str) -> pd.DataFrame:
+    """Trae tickets en vivo y los enriquece. Cache 15 min (ttl=900)."""
+    crudo = hs.cargar_desde_hubspot(token)
+    return dl.enriquecer_tickets(crudo)
+
+
 @st.cache_data(show_spinner=False)
 def _tk(ruta): return dl.cargar_tickets(ruta)
 @st.cache_data(show_spinner=False)
@@ -141,17 +149,59 @@ with st.sidebar:
     st.markdown("### 🛠️ Incidencias Técnicas")
     st.caption("Opción Yo · Área de Incidencias")
     st.divider()
-    st.markdown("**1 · Fuente de datos (HubSpot)**")
-    subido = st.file_uploader("Sube el export de HubSpot (.xlsx o .csv)",
-                              type=["xlsx", "xls", "csv"], key="up_tickets")
-    if subido is not None:
-        df = dl.cargar_tickets(subido)
-        st.success(f"✅ {subido.name} ({len(df)} tickets)")
-    elif SAMPLE_TICKETS is not None:
-        df = _tk(SAMPLE_TICKETS)
-        st.info(f"📄 Muestra incluida ({len(df)} tickets).")
+    st.markdown("**1 · Fuente de datos**")
+    hay_token = "HUBSPOT_TOKEN" in st.secrets
+    opciones_fuente = ["🔌 HubSpot en vivo", "📁 Archivo (CSV/Excel)"]
+    fuente = st.radio("¿De dónde traigo los tickets?", opciones_fuente,
+                      index=0 if hay_token else 1)
+
+    df = None
+    origen_txt = ""
+    if fuente == "🔌 HubSpot en vivo":
+        if not hay_token:
+            st.warning("No hay token configurado. Agrégalo en **Settings → Secrets** "
+                       "como `HUBSPOT_TOKEN` (ver README). Uso la muestra por ahora.")
+            if SAMPLE_TICKETS is not None:
+                df = _tk(SAMPLE_TICKETS); origen_txt = "muestra local"
+        else:
+            token = st.secrets["HUBSPOT_TOKEN"]
+            colb1, colb2 = st.columns(2)
+            probar = colb1.button("Probar conexión", use_container_width=True)
+            recargar = colb2.button("🔄 Recargar", use_container_width=True)
+            if probar:
+                ok, msg = hs.probar_conexion(token)
+                (st.success if ok else st.error)(msg)
+            if recargar:
+                st.cache_data.clear()
+            try:
+                df = _tickets_hubspot(token)
+                origen_txt = "HubSpot en vivo"
+                st.success(f"✅ {len(df)} tickets desde HubSpot")
+            except Exception as e:
+                st.error(f"⚠️ No pude traer datos de HubSpot: {e}")
+                if SAMPLE_TICKETS is not None:
+                    st.info("Muestro la **muestra incluida** mientras tanto.")
+                    df = _tk(SAMPLE_TICKETS); origen_txt = "muestra local"
     else:
-        st.error("Sube el export de HubSpot para continuar."); st.stop()
+        st.caption("Usa el export de **'problemas técnicos'**.")
+        subido = st.file_uploader("Sube el export (.xlsx o .csv)",
+                                  type=["xlsx", "xls", "csv"], key="up_tickets")
+        if subido is not None:
+            try:
+                df = dl.cargar_tickets(subido); origen_txt = subido.name
+                st.success(f"✅ {subido.name} ({len(df)} tickets)")
+            except Exception as e:
+                st.error(f"⚠️ {e}")
+                if SAMPLE_TICKETS is not None:
+                    st.info("Sigo con la **muestra incluida**.")
+                    df = _tk(SAMPLE_TICKETS); origen_txt = "muestra local"
+        elif SAMPLE_TICKETS is not None:
+            df = _tk(SAMPLE_TICKETS); origen_txt = "muestra local"
+            st.info(f"📄 Muestra incluida ({len(df)} tickets).")
+
+    if df is None:
+        st.error("No hay datos disponibles. Configura HubSpot o sube un archivo.")
+        st.stop()
 
     st.divider()
     st.markdown("**2 · Filtro principal · SIN RESPUESTA**")
@@ -182,7 +232,7 @@ df_view = df_sr if vista == "Solo Sin Respuesta" else df_filt
 
 # ---------------------------------------------------------------------
 st.markdown(f"""<div class="oy-header"><h1>🛠️ Dashboard de Incidencias Técnicas</h1>
-<p>Opción Yo · Corte Mayo 2026 · Fuente: export HubSpot "problemas técnicos"
+<p>Opción Yo · Fuente: <b>{origen_txt}</b> · actualizado {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}
 &nbsp;|&nbsp; Vista: <b>{vista}</b> · {len(df_view)} tickets en pantalla</p></div>""",
     unsafe_allow_html=True)
 
@@ -406,9 +456,19 @@ with tabs[5]:
     ans_e = esp["ans_primera"].astype(str).str.lower()
     a_t = ans_e.str.contains("a tiempo").sum(); con = esp["ans_primera"].notna().sum()
     he = esp["horas_cierre"]; he = he[he>0]
+    # Tiempo REAL de 1ª respuesta (solo si la fuente es la API de HubSpot)
+    hpr = esp["horas_primera_respuesta"].dropna() if "horas_primera_respuesta" in esp else pd.Series(dtype=float)
+    hay_real = len(hpr) > 0
+    if hay_real:
+        st.success("🟢 Dato en vivo: tiempo REAL de primera respuesta disponible desde HubSpot.")
     c = st.columns(4)
     with c[0]: kpi("Tickets de especialistas", len(esp), 'contactos con "(E)"')
-    with c[1]: kpi("ANS 1ª resp. a tiempo", f'{(a_t/con*100) if con else 0:.0f}%', f'{a_t} de {con}', "green")
+    if hay_real:
+        with c[1]: kpi("Mediana 1ª respuesta", fmt_d(hpr.median()*24),
+                       f'{hpr.median():.1f} h · dato real', "green")
+    else:
+        with c[1]: kpi("ANS 1ª resp. a tiempo", f'{(a_t/con*100) if con else 0:.0f}%',
+                       f'{a_t} de {con} · cumplimiento', "green")
     with c[2]: kpi("Mediana a resolución", fmt_d(he.median()) if len(he) else "—", "creación→cierre", "blue")
     with c[3]: kpi("P90 a resolución", fmt_d(he.quantile(.9)) if len(he) else "—", "90% por debajo", "amber")
     st.markdown("####")
